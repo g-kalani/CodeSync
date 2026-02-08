@@ -16,9 +16,11 @@ function EditorPage() {
   const editorRef = useRef(null);
   
   const [language, setLanguage] = useState("python");
+
   const [output, setOutput] = useState("");
+  const [execTime, setExecTime] = useState(null); // Changed to execTime to match your usage
   const [aiAnalysis, setAiAnalysis] = useState("");
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false); // Added this missing state
 
   // Synchronize with socket events for real-time collaboration
   useEffect(() => {
@@ -29,11 +31,17 @@ function EditorPage() {
       setLanguage(newLanguage);
     });
 
-    socket.on('execution-results', ({ output, aiAnalysis }) => {
-      setOutput(output);
-      setAiAnalysis(aiAnalysis);
-      setIsAnalyzing(false);
-    });
+    // Inside your useEffect
+    socket.on('execution-results', ({ output, aiAnalysis, executionTime }) => {
+    setOutput(output);
+    setAiAnalysis(aiAnalysis);
+    
+    // Only update if executionTime actually exists in the payload
+    if (executionTime !== undefined) {
+      setExecTime(parseFloat(executionTime));
+    }
+    setIsAnalyzing(false);
+  });
 
     socket.on('remote-execution-started', () => {
         setOutput("Running code...");
@@ -108,42 +116,58 @@ function EditorPage() {
   };
 
   // Submit code to backend for execution and AI analysis
+ // Submit code to backend for execution and AI analysis
   const handleRun = async () => {
-    const currentCode = editorRef.current ? editorRef.current.getValue() : "";
-    socket.emit('execution-started', { roomId });
+      const currentCode = editorRef.current ? editorRef.current.getValue() : "";
+      
+      // Reset states before running
+      setOutput("Running code...");
+      setAiAnalysis("");
+      //setExecTime(null);
+      setIsAnalyzing(true);
+      
+      socket.emit('execution-started', { roomId });
 
-    const API_BASE = window.location.hostname === 'localhost' 
-    ? 'http://localhost:10000' 
-    : ''; // In production, it's the same domain
+      const API_BASE = window.location.hostname === 'localhost' 
+      ? 'http://localhost:10000' 
+      : '';
 
-    try {
-        const { data } = await axios.post(`${API_BASE}/execute`, { code:currentCode, language });
+      try {
+          // --- Inside handleRun try block ---
+          const { data } = await axios.post(`${API_BASE}/execute`, { code: currentCode, language });
 
-        const finalOutput = data.stdout || data.stderr || "Program executed with no output.";
-        let finalAiAnalysis = "";
+          const finalOutput = data.stdout || data.stderr || "Program executed with no output.";
+          let finalAiAnalysis = data.aiExplanation ? data.aiExplanation.replace(/^(Great start|Hello|Hi|Greetings|Let's fix).*?[.!]\s*/gi, "").replace(/^\d+\.\s/gm, '* ').trim() : "";
 
-        if (data.stderr || data.aiExplanation) {
-            finalAiAnalysis = data.aiExplanation
-                ? data.aiExplanation.replace(/^(Great start|Hello|Hi|Greetings|Let's fix).*?[.!]\s*/gi, "").replace(/^\d+\.\s/gm, '* ').trim()
-                : "";
-        }
+          // Use the actual value from backend
+          const rawTime = data.executionTime; 
+          const parsedTime = rawTime ? parseFloat(rawTime) : null;
 
-        socket.emit('broadcast-results', { 
-            roomId, 
-            output: finalOutput, 
-            aiAnalysis: finalAiAnalysis 
-        });
+          setOutput(finalOutput);
+          setAiAnalysis(finalAiAnalysis);
+          setExecTime(parsedTime); 
+          setIsAnalyzing(false);
 
-    } catch (err) {
-        const errorMsg = "Error: Server unreachable.";
-        socket.emit('broadcast-results', { 
-            roomId, 
-            output: errorMsg, 
-            aiAnalysis: "" 
-        });
-        setOutput(errorMsg);
-        setIsAnalyzing(false);
-    }
+          socket.emit('broadcast-results', { 
+              roomId, 
+              output: finalOutput, 
+              aiAnalysis: finalAiAnalysis,
+              executionTime: rawTime // Send the raw string/value
+          });
+
+      } catch (err) {
+          const errorMsg = "Error: Server unreachable.";
+          setOutput(errorMsg);
+          setExecTime(null);
+          setIsAnalyzing(false);
+          
+          socket.emit('broadcast-results', { 
+              roomId, 
+              output: errorMsg, 
+              aiAnalysis: "",
+              executionTime: null
+          });
+      }
   };
 
   const copyToClipboard = (text) => navigator.clipboard.writeText(text);
@@ -202,10 +226,41 @@ function EditorPage() {
             <Group direction="vertical">
               <Panel defaultSize={40}>
                 <div style={{ height: "100%", padding: "20px", background: "#0b1120", overflowY: "auto" }}>
-                  <div className="panel-label">
-                    <span>Terminal Output</span>
+                  
+                  {/* STATIC HEADER SECTION - ALWAYS VISIBLE */}
+                 <div style={{ 
+                  display: 'flex', 
+                  justifyContent: 'space-between', 
+                  alignItems: 'center', 
+                  marginBottom: '12px',
+                  paddingBottom: '8px',
+                  borderBottom: '1px solid #1e293b' 
+                }}>
+                  <span style={{ fontSize: '12px', fontWeight: '700', color: '#94a3b8', letterSpacing: '0.05em' }}>
+                    TERMINAL OUTPUT
+                  </span>
+                    
+                    {/* LABEL IS ALWAYS HERE, VALUE UPDATES */}
+                    <div style={{ fontSize: '11px', color: '#64748b', fontWeight: '600' }}>
+                      Execution Time: 
+                      <span style={{ color: '#10b981', marginLeft: '5px' }}>
+                        {/* Convert to Number on the fly for the display check */}
+                        {!isNaN(parseFloat(execTime)) && execTime !== null 
+                          ? `${parseFloat(execTime).toFixed(6)}s` 
+                          : (execTime === null ? '--' : '...')
+                        }
+                      </span>
+                    </div>
                   </div>
-                  <pre style={{ margin: 0, color: "#10b981", fontSize: "13px", lineHeight: "1.6", fontFamily: "'Fira Code', monospace" }}>
+
+                  <pre style={{ 
+                    margin: 0, 
+                    color: "#10b981", 
+                    fontSize: "13px", 
+                    lineHeight: "1.6", 
+                    fontFamily: "'Fira Code', monospace",
+                    whiteSpace: 'pre-wrap' 
+                  }}>
                     {output || "> Ready to execute..."}
                   </pre>
                 </div>

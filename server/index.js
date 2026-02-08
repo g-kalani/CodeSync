@@ -88,8 +88,12 @@ io.on('connection', (socket) => {
         io.to(roomId).emit('remote-execution-started');
     });
 
-    socket.on('broadcast-results', ({ roomId, output, aiAnalysis }) => {
-        io.to(roomId).emit('execution-results', { output, aiAnalysis });
+    socket.on('broadcast-results', ({ roomId, output, aiAnalysis, executionTime }) => { 
+        io.to(roomId).emit('execution-results', { 
+            output, 
+            aiAnalysis, 
+            executionTime 
+        });
     });
 
     socket.on('disconnecting', () => {
@@ -201,27 +205,29 @@ app.post('/execute', async (req, res) => {
     }
 
     try {
+        const startTime = Date.now(); // Start Timer
         const { stdout, stderr } = await runCommand(executeCmd);
+        const endTime = Date.now(); // End Timer
+        
+        const executionTime = ((endTime - startTime) / 1000).toFixed(3); // Convert to seconds
+
         let aiExplanation = "";        
         if (stderr && stderr.trim() !== "") {
-            // Wrap in try-catch to ensure 2.5/1.5 model version issues don't hang the server
             try {
                 aiExplanation = await getGeminiErrorAnalysis(code, stderr, language);
             } catch (aiErr) {
                 aiExplanation = "AI Debugger insight failed to load.";
             }
         }
-        res.json({ stdout, stderr, aiExplanation }); 
+        // Send executionTime back to frontend
+        res.json({ stdout, stderr, aiExplanation, executionTime }); 
     } catch (error) {
         res.status(500).json({ error: error.message });
     } finally {
-        // Cleanup locally generated files
         const filesToCleanup = [filename, 'temp_out', 'out', `${className}.class`];
         filesToCleanup.forEach(f => {
             const p = path.join(tempDir, f);
-            if (fs.existsSync(p)) {
-                try { fs.unlinkSync(p); } catch (e) {}
-            }
+            if (fs.existsSync(p)) { try { fs.unlinkSync(p); } catch (e) {} }
         });
     }
 });
