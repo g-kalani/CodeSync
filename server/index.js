@@ -63,8 +63,9 @@ const loadJSONL = async (filePath) => {
     } catch (err) { console.error("Error loading dataset:", err.message); }
 })();
 
-// Initialize Gemini
-// Note: Changed to gemini-1.5-flash as 2.5 does not exist yet
+const isProduction = process.env.NODE_ENV === 'production' || process.env.PORT;
+const tempDir = isProduction ? '/tmp' : __dirname;
+
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" }); 
 
@@ -131,7 +132,7 @@ async function getGeminiErrorAnalysis(code, error, language) {
     STRICT FORMATTING RULES:
     1. NEVER use backticks (\`) or code blocks (\`\`\`) in the explanation section.
     2. The ONLY triple-backtick block allowed is at the very end of your response.
-    3. ${hasExamples ? 'Start with the tag: 🔍 [DATASET-GROUNDED ANALYSIS]' : 'Do NOT use the dataset-grounded tag.'}
+    3. ${hasExamples ? 'Start with the tag: [DATASET-GROUNDED ANALYSIS]' : 'Do NOT use the dataset-grounded tag.'}
 
     Reference Examples from my local database:
     ${examplesContext}
@@ -167,20 +168,35 @@ app.post('/execute', async (req, res) => {
         const classMatch = code.match(/public\s+class\s+(\w+)/);
         className = classMatch ? classMatch[1] : "Main"; 
         filename = `${className}.java`;
-        const filePath = path.join(__dirname, filename); 
+        const filePath = path.join(tempDir, filename); 
         fs.writeFileSync(filePath, code);        
-        executeCmd = `javac ${filePath} && java -cp ${__dirname} ${className}`;
+        
+        if (isProduction) {
+            // Render execution (Direct)
+            executeCmd = `javac "${filePath}" && java -cp "${tempDir}" ${className}`;
+        } else {
+            // Local execution (Docker)
+            executeCmd = `docker run --rm -v "${process.cwd()}:/app" compiler-box sh -c "javac /app/${filename} && java -cp /app ${className}"`;
+        }
     } else {
         const ext = language === 'python' ? 'py' : 'cpp';
         filename = `temp_code.${ext}`;
-        const filePath = path.join(__dirname, filename); 
+        const filePath = path.join(tempDir, filename); 
         fs.writeFileSync(filePath, code);
 
         if (language === 'python') {
-            executeCmd = `python3 ${filePath}`;
+            if (isProduction) {
+                executeCmd = `python3 "${filePath}"`;
+            } else {
+                executeCmd = `docker run --rm -v "${process.cwd()}:/app" compiler-box python3 /app/${filename}`;
+            }
         } else if (language === 'cpp') {
-            const outPath = path.join(__dirname, 'temp_out');
-            executeCmd = `g++ ${filePath} -o ${outPath} && chmod +x ${outPath} && ${outPath}`;
+            if (isProduction) {
+                const outPath = path.join(tempDir, 'temp_out');
+                executeCmd = `g++ "${filePath}" -o "${outPath}" && chmod +x "${outPath}" && "${outPath}"`;
+            } else {
+                executeCmd = `docker run --rm -v "${process.cwd()}:/app" compiler-box sh -c "g++ /app/${filename} -o /app/out && /app/out"`;
+            }
         }
     }
 
@@ -188,16 +204,24 @@ app.post('/execute', async (req, res) => {
         const { stdout, stderr } = await runCommand(executeCmd);
         let aiExplanation = "";        
         if (stderr && stderr.trim() !== "") {
-            aiExplanation = await getGeminiErrorAnalysis(code, stderr, language);
+            // Wrap in try-catch to ensure 2.5/1.5 model version issues don't hang the server
+            try {
+                aiExplanation = await getGeminiErrorAnalysis(code, stderr, language);
+            } catch (aiErr) {
+                aiExplanation = "AI Debugger insight failed to load.";
+            }
         }
-        
         res.json({ stdout, stderr, aiExplanation }); 
     } catch (error) {
         res.status(500).json({ error: error.message });
     } finally {
-        [filename, 'temp_out', `${className}.class`].forEach(f => {
-            const p = path.join(__dirname, f);
-            if (fs.existsSync(p)) fs.unlinkSync(p);
+        // Cleanup locally generated files
+        const filesToCleanup = [filename, 'temp_out', 'out', `${className}.class`];
+        filesToCleanup.forEach(f => {
+            const p = path.join(tempDir, f);
+            if (fs.existsSync(p)) {
+                try { fs.unlinkSync(p); } catch (e) {}
+            }
         });
     }
 });

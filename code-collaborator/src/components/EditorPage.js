@@ -112,11 +112,12 @@ function EditorPage() {
     const currentCode = editorRef.current ? editorRef.current.getValue() : "";
     socket.emit('execution-started', { roomId });
 
+    const API_BASE = window.location.hostname === 'localhost' 
+    ? 'http://localhost:10000' 
+    : ''; // In production, it's the same domain
+
     try {
-        const { data } = await axios.post("/execute", { 
-            code: currentCode, 
-            language 
-        });
+        const { data } = await axios.post(`${API_BASE}/execute`, { code:currentCode, language });
 
         const finalOutput = data.stdout || data.stderr || "Program executed with no output.";
         let finalAiAnalysis = "";

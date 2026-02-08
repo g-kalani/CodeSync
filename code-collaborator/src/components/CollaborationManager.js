@@ -7,7 +7,7 @@ export const initCollaboration = (editor, roomId) => {
 
     const serverUrl = process.env.NODE_ENV === 'production' 
         ? 'wss://code-editor-app-euzi.onrender.com' 
-        : 'ws://localhost:5000';
+        : 'ws://localhost:10000';
 
     const provider = new WebsocketProvider(
         serverUrl, 
