@@ -117,8 +117,20 @@ server.on('upgrade', (request, socket, head) => {
 });
 
 const runCommand = (cmd) => new Promise((resolve) => {
+    const startHr = process.hrtime.bigint(); // Capture start time in nanoseconds
+    
     exec(cmd, { timeout: 10000 }, (error, stdout, stderr) => {
-        resolve({ stdout, stderr: stderr || (error ? error.message : "") });
+        const endHr = process.hrtime.bigint(); // Capture end time
+        
+        // Calculate difference and convert nanoseconds to seconds string
+        const totalNs = endHr - startHr;
+        const executionTime = (Number(totalNs) / 1_000_000_000).toFixed(6);
+        
+        resolve({ 
+            stdout, 
+            stderr: stderr || (error ? error.message : ""),
+            executionTime 
+        });
     });
 });
 
@@ -205,22 +217,30 @@ app.post('/execute', async (req, res) => {
     }
 
     try {
-        const startTime = Date.now(); // Start Timer
-        const { stdout, stderr } = await runCommand(executeCmd);
-        const endTime = Date.now(); // End Timer
-        
-        const executionTime = ((endTime - startTime) / 1000).toFixed(3); // Convert to seconds
+        // 1. Run the code and get high-precision time from runCommand
+        const { stdout, stderr, executionTime } = await runCommand(executeCmd);
 
         let aiExplanation = "";        
+        
+        // 2. Trigger AI analysis only if there is an error
         if (stderr && stderr.trim() !== "") {
             try {
+                // Using the Gemini 2.5 Flash model as configured earlier
                 aiExplanation = await getGeminiErrorAnalysis(code, stderr, language);
             } catch (aiErr) {
-                aiExplanation = "AI Debugger insight failed to load.";
+                console.error("AI Analysis Error:", aiErr);
+                aiExplanation = "AI Debugger insight failed to load, but code execution completed.";
             }
         }
-        // Send executionTime back to frontend
-        res.json({ stdout, stderr, aiExplanation, executionTime }); 
+
+        // 3. Send 6-decimal precision result to the frontend
+        res.json({ 
+            stdout, 
+            stderr, 
+            aiExplanation, 
+            executionTime 
+        }); 
+
     } catch (error) {
         res.status(500).json({ error: error.message });
     } finally {
